@@ -1,0 +1,13 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Python: Current File",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${file}",
+            "console": "integratedTerminal",
+            "python": "c:\\Users\\Shin-Nyum\\Desktop\\Python_Workspace\\venv\\Scripts\\python.exe"
+        }
+    ]
+}

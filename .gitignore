@@ -1,0 +1,44 @@
+# Python
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+dist/
+build/
+
+# Node.js
+node_modules/
+
+# Data (proprietary insurance documents)
+data/
+
+# Backup directories
+*_backup_*/
+
+# Large binary files
+*.pdf
+*.xlsx
+*.xls
+*.xlsm
+*.docx
+*.doc
+*.zip
+
+# MS Office temp/lock files
+~$*
+
+# Environment / secrets
+.env
+.env.*
+
+# OS files
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# IDE
+.idea/
+*.swp
+*.swo
