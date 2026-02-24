@@ -2,11 +2,26 @@
 Data Loader Module - High-Performance Excel Data Loading
 Uses Pandas for bulk data loading instead of cell-by-cell win32com access.
 Provides 10-50x speed improvement over COM-based access.
+
+Performance: Uses 'calamine' engine (Rust-based) when available for 2-10x
+faster Excel reading compared to openpyxl.
 """
 import pandas as pd
 import numpy as np
 import os
 from typing import Dict, Optional, Tuple, Any, List
+
+# Detect fastest available Excel engine
+# calamine (Rust) >> openpyxl (Python) for read-only access
+def _detect_excel_engine():
+    """Detect the fastest available Excel reading engine."""
+    try:
+        import python_calamine  # noqa: F401
+        return 'calamine'
+    except ImportError:
+        return 'openpyxl'
+
+_EXCEL_ENGINE = _detect_excel_engine()
 
 
 class DataLoader:
@@ -97,10 +112,11 @@ class DataLoader:
                 raise FileNotFoundError(f"설정 파일을 찾을 수 없습니다: {self.config_file_path}")
             
             if log_callback:
-                log_callback(f"설정 파일 로드 중: {file_path}")
-            
+                log_callback(f"설정 파일 로드 중: {file_path} (엔진: {_EXCEL_ENGINE})")
+
             # Load all sheets at once using ExcelFile for efficiency
-            with pd.ExcelFile(self.config_file_path, engine='openpyxl') as xlsx:
+            # calamine engine is 2-10x faster than openpyxl for read-only
+            with pd.ExcelFile(self.config_file_path, engine=_EXCEL_ENGINE) as xlsx:
                 sheet_names = xlsx.sheet_names
                 
                 # Load main sheet (first sheet or specified)
@@ -257,14 +273,15 @@ class DataLoader:
                 raise FileNotFoundError(f"PGM 파일을 찾을 수 없습니다: {self.pgm_file_path}")
             
             if log_callback:
-                log_callback(f"PGM 파일 로드 중 (Pandas): {file_path}")
-            
+                log_callback(f"PGM 파일 로드 중 (엔진: {_EXCEL_ENGINE}): {file_path}")
+
             # Use product_code parameter or instance variable
             code = product_code or self.product_code
             main_sheet_name = f"Main_{code}"
-            
+
             # Load sheets using ExcelFile for efficiency
-            with pd.ExcelFile(self.pgm_file_path, engine='openpyxl') as xlsx:
+            # calamine engine is 2-10x faster than openpyxl for read-only
+            with pd.ExcelFile(self.pgm_file_path, engine=_EXCEL_ENGINE) as xlsx:
                 sheet_names = xlsx.sheet_names
                 
                 # Load Main sheet

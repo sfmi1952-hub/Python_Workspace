@@ -434,17 +434,69 @@ class MainWindow(QMainWindow):
             
             updated_count = 0
             error_count = 0
-            
+
             self.log("\n📋 담보 매핑 체크 진행...")
-            
+
+            # ===== PRE-COMPUTE: 루프 밖에서 한 번만 계산 (성능 핵심) =====
+            import numpy as np
+
+            보장구조_df = self.data_loader.df_보장구조
+            보장배수_df = self.data_loader.df_보장배수
+            main_df = self.data_loader.df_pgm_main
+
+            # 보장배수 컬럼 위치 (루프 밖에서 한 번만 탐색)
+            면책기간_col_idx = None
+            감액기간_col_idx = None
+            if 보장배수_df is not None and not 보장배수_df.empty:
+                col_names = [str(c) if c else '' for c in 보장배수_df.columns]
+                for idx, col_name in enumerate(col_names):
+                    if '면책기간' in col_name:
+                        면책기간_col_idx = idx
+                    elif '감액기간' in col_name and 감액기간_col_idx is None:
+                        감액기간_col_idx = idx
+
+            # 보장배수 numpy 배열 + 문자열 인덱스 (루프 밖에서 한 번만 생성)
+            보장배수_str_cols = {}
+            보장배수_arr = None
+            if 보장배수_df is not None and not 보장배수_df.empty:
+                보장배수_arr = 보장배수_df.values
+                for col_idx in range(min(5, 보장배수_arr.shape[1])):
+                    보장배수_str_cols[col_idx] = np.array(
+                        [str(v).strip() if v is not None else '' for v in 보장배수_arr[:, col_idx]]
+                    )
+
+            # 보장구조 문자열 인덱스 (루프 밖에서 한 번만 생성)
+            보장구조_col0_str = None
+            if 보장구조_df is not None and not 보장구조_df.empty:
+                보장구조_col0_str = np.array(
+                    [str(v).strip() if v is not None else '' for v in 보장구조_df.iloc[:, 0].values]
+                )
+
+            # Main 시트 연장형 컬럼 및 인덱스 (루프 밖에서 한 번만 탐색)
+            연장형_col_idx = None
+            main_str_cols = {}
+            main_arr = None
+            if main_df is not None and not main_df.empty:
+                main_arr = main_df.values
+                main_col_names = [str(c) if c else '' for c in main_df.columns]
+                for idx, col_name in enumerate(main_col_names):
+                    if '보험기간연장형' in col_name:
+                        연장형_col_idx = idx
+                if 연장형_col_idx is not None:
+                    for col_idx in range(min(5, main_arr.shape[1])):
+                        main_str_cols[col_idx] = np.array(
+                            [str(v).strip() if v is not None else '' for v in main_arr[:, col_idx]]
+                        )
+
+            # ===== MAIN LOOP (pre-computed 배열 사용) =====
             for coverage in coverage_list:
                 담보코드 = str(coverage.get('담보코드', '')).strip()
                 if not 담보코드:
                     continue
-                
-                # 1. CSV mapping for 대표담보코드, 구분값
+
+                # 1. CSV mapping for 대표담보코드, 구분값 (O(1) dict lookup)
                 mapping_result = self.csv_loader.find_대표담보코드(담보코드)
-                
+
                 if mapping_result:
                     coverage['대표담보코드'] = mapping_result.get('대표담보코드', '')
                     coverage['구분값'] = mapping_result.get('구분값', '')
@@ -455,96 +507,60 @@ class MainWindow(QMainWindow):
                     coverage['구분값'] = ''
                     coverage['확인필요'] = '찾기에러'
                     error_count += 1
-                
-                # 2. PGM lookup for 면책/감액/연장형 (VBA 로직과 동일)
-                # VBA Logic: 보장구조 → 보장배수 lookup → sum 면책기간/감액기간 → if sum>0 then 1 else 0
+
+                # 2. PGM lookup (pre-computed numpy arrays 사용 - astype/iterrows 제거)
                 면책_flag = 0
                 감액_flag = 0
                 연장형_flag = 0
-                
+
                 try:
-                    보장구조_df = self.data_loader.df_보장구조
-                    보장배수_df = self.data_loader.df_보장배수
-                    main_df = self.data_loader.df_pgm_main
-                    
-                    if 보장구조_df is not None and not 보장구조_df.empty:
-                        # 담보코드로 보장구조 시트에서 보장배수 행 인덱스 찾기
-                        # VBA: 보장구조_Lookup_Key = ProductCode & "_" & DAMBO
-                        # 첫 번째 컬럼에서 담보코드 포함 검색
-                        col0_values = 보장구조_df.iloc[:, 0].astype(str).str.strip()
-                        matches = 보장구조_df[col0_values.str.contains(담보코드[-7:], na=False)]
-                        
-                        if not matches.empty:
-                            # 보장배수 컬럼 찾기
-                            보장배수_col_idx = None
-                            면책기간_col_idx = None
-                            감액기간_col_idx = None
-                            
-                            col_names = [str(c) if c else '' for c in 보장배수_df.columns]
-                            
-                            # 보장배수 시트에서 컬럼 위치 찾기
-                            for idx, col_name in enumerate(col_names):
-                                if '면책기간' in col_name:
-                                    면책기간_col_idx = idx
-                                elif '감액기간' in col_name and 감액기간_col_idx is None:
-                                    감액기간_col_idx = idx
-                            
-                            # 보장배수 시트에서 담보코드로 직접 검색
-                            sum_면책 = 0
-                            sum_감액 = 0
-                            
-                            for col_idx in range(min(5, len(보장배수_df.columns))):
-                                col_values = 보장배수_df.iloc[:, col_idx].astype(str).str.strip()
-                                담보_matches = 보장배수_df[col_values == 담보코드]
-                                
-                                if not 담보_matches.empty:
-                                    for _, row in 담보_matches.iterrows():
-                                        if 면책기간_col_idx is not None:
-                                            val = row.iloc[면책기간_col_idx]
-                                            try:
-                                                sum_면책 += float(val) if val and str(val) != 'nan' else 0
-                                            except: pass
-                                        if 감액기간_col_idx is not None:
-                                            val = row.iloc[감액기간_col_idx]
-                                            try:
-                                                sum_감액 += float(val) if val and str(val) != 'nan' else 0
-                                            except: pass
-                                    break
-                            
-                            # VBA: If sum_면책 > 0 Then 1 Else 0
+                    if 보장구조_col0_str is not None:
+                        suffix7 = 담보코드[-7:]
+                        mask = np.char.find(보장구조_col0_str, suffix7) >= 0
+                        if np.any(mask):
+                            sum_면책 = 0.0
+                            sum_감액 = 0.0
+
+                            if 보장배수_arr is not None:
+                                for col_idx, str_arr in 보장배수_str_cols.items():
+                                    matched_rows = np.where(str_arr == 담보코드)[0]
+                                    if len(matched_rows) > 0:
+                                        for row_idx in matched_rows:
+                                            if 면책기간_col_idx is not None:
+                                                val = 보장배수_arr[row_idx, 면책기간_col_idx]
+                                                try:
+                                                    sum_면책 += float(val) if val is not None and str(val) != 'nan' else 0
+                                                except (ValueError, TypeError):
+                                                    pass
+                                            if 감액기간_col_idx is not None:
+                                                val = 보장배수_arr[row_idx, 감액기간_col_idx]
+                                                try:
+                                                    sum_감액 += float(val) if val is not None and str(val) != 'nan' else 0
+                                                except (ValueError, TypeError):
+                                                    pass
+                                        break
+
                             면책_flag = 1 if sum_면책 > 0 else 0
                             감액_flag = 1 if sum_감액 > 0 else 0
-                    
-                    # 연장형은 Main 시트의 보험기간연장형 컬럼에서 가져옴
-                    if main_df is not None and not main_df.empty:
-                        main_col_names = [str(c) if c else '' for c in main_df.columns]
-                        연장형_col_idx = None
-                        담보코드_col_idx = None
-                        
-                        for idx, col_name in enumerate(main_col_names):
-                            if '보험기간연장형' in col_name:
-                                연장형_col_idx = idx
-                            if idx < 5:  # 담보코드는 앞쪽 컬럼에 위치
-                                담보코드_col_idx = idx
-                        
-                        if 연장형_col_idx is not None:
-                            for col_idx in range(min(5, len(main_df.columns))):
-                                col_values = main_df.iloc[:, col_idx].astype(str).str.strip()
-                                main_matches = main_df[col_values == 담보코드]
-                                if not main_matches.empty:
-                                    val = main_matches.iloc[0, 연장형_col_idx]
-                                    try:
-                                        연장형_flag = 1 if val and float(val) == 1 else 0
-                                    except: pass
-                                    break
-                                    
-                except Exception as e:
-                    pass  # 에러 시 기본값 0 유지
-                
+
+                    if 연장형_col_idx is not None and main_arr is not None:
+                        for col_idx, str_arr in main_str_cols.items():
+                            matched_rows = np.where(str_arr == 담보코드)[0]
+                            if len(matched_rows) > 0:
+                                val = main_arr[matched_rows[0], 연장형_col_idx]
+                                try:
+                                    연장형_flag = 1 if val is not None and float(val) == 1 else 0
+                                except (ValueError, TypeError):
+                                    pass
+                                break
+
+                except Exception:
+                    pass
+
                 coverage['면책'] = 면책_flag
                 coverage['감액'] = 감액_flag
                 coverage['연장형'] = 연장형_flag
-                
+
                 status = coverage.get('대표담보코드', '') or '찾기에러'
                 self.log(f"   {담보코드} → {status}")
             

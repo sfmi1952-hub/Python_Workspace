@@ -35,17 +35,20 @@ class CSVLoader:
         Returns list of dictionaries with mapping data.
         """
         file_path = os.path.join(self.data_path, "담보매핑.csv")
-        
+
         if not os.path.exists(file_path):
             if log_callback:
                 log_callback(f"⚠️ 담보매핑.csv 파일이 없습니다: {file_path}")
             return []
-        
+
         self.담보매핑_data = self._load_csv(file_path, log_callback)
-        
+
+        # Build dictionary indexes for O(1) lookup
+        self._build_담보매핑_index()
+
         if log_callback:
             log_callback(f"✅ 담보매핑.csv 로드 완료: {len(self.담보매핑_data)}건")
-        
+
         return self.담보매핑_data
     
     def load_참조(self, log_callback=None) -> List[Dict[str, Any]]:
@@ -103,20 +106,45 @@ class CSVLoader:
         
         return data
     
+    def _build_담보매핑_index(self):
+        """
+        Build dictionary indexes for fast 담보매핑 lookup.
+        Indexes by exact 담보코드 and last 7 characters for O(1) access.
+        """
+        self._담보매핑_exact = {}   # {담보코드: row}
+        self._담보매핑_suffix7 = {} # {last_7_chars: row}
+
+        for row in self.담보매핑_data:
+            row_담보코드 = row.get('담보코드', '').strip()
+            if not row_담보코드:
+                continue
+            # Exact match index
+            if row_담보코드 not in self._담보매핑_exact:
+                self._담보매핑_exact[row_담보코드] = row
+            # Last 7 chars index
+            if len(row_담보코드) >= 7:
+                suffix = row_담보코드[-7:]
+                if suffix not in self._담보매핑_suffix7:
+                    self._담보매핑_suffix7[suffix] = row
+
     def find_대표담보코드(self, 담보코드: str) -> Dict[str, Any]:
         """
         Finds the 대표담보코드 for a given 담보코드.
-        Returns the matching row or empty dict if not found.
-        Supports new column names: 대표담보명(약관), 구분
+        Uses pre-built dictionary index for O(1) lookup.
         """
-        for row in self.담보매핑_data:
-            row_담보코드 = row.get('담보코드', '').strip()
-            if row_담보코드 == 담보코드.strip():
+        key = 담보코드.strip()
+
+        # 1. Exact match (O(1))
+        row = self._담보매핑_exact.get(key)
+        if row:
+            return self._normalize_row(row)
+
+        # 2. Last 7 characters match (O(1))
+        if len(key) >= 7:
+            row = self._담보매핑_suffix7.get(key[-7:])
+            if row:
                 return self._normalize_row(row)
-            # Also check last 7 characters
-            if len(row_담보코드) >= 7 and len(담보코드) >= 7:
-                if row_담보코드[-7:] == 담보코드[-7:]:
-                    return self._normalize_row(row)
+
         return {}
     
     def _normalize_row(self, row: Dict[str, Any]) -> Dict[str, Any]:
@@ -134,24 +162,29 @@ class CSVLoader:
     
     def _build_참조_index(self):
         """
-        Build dictionary index for fast 참조 lookup.
+        Build dictionary indexes for fast 참조 lookup.
         Structure: {코드명: [(담보속성, 적용구분, 약관문구), ...]}
         """
         self._참조_index = {}  # {코드명: [(담보속성, 적용구분_str, 약관문구), ...]}
-        
+        self._참조_담보속성_index = {}  # {담보속성: [row, ...]}
+
         for row in self.참조_data:
             # Get 코드명 (try multiple column name variants)
             row_코드명 = (row.get('코드명', '') or row.get('태그명', '') or row.get('태그명(코드명)', '')).strip()
-            if not row_코드명:
-                continue
-            
             row_담보속성 = row.get('담보속성', '').strip()
             row_적용구분 = row.get('적용구분', '').strip()
             약관문구 = row.get('약관문구', '') or row.get('적용문구', '') or row.get('적용문구(약관문구)', '')
-            
-            if row_코드명 not in self._참조_index:
-                self._참조_index[row_코드명] = []
-            self._참조_index[row_코드명].append((row_담보속성, row_적용구분, 약관문구))
+
+            if row_코드명:
+                if row_코드명 not in self._참조_index:
+                    self._참조_index[row_코드명] = []
+                self._참조_index[row_코드명].append((row_담보속성, row_적용구분, 약관문구))
+
+            # 담보속성 인덱스
+            if row_담보속성:
+                if row_담보속성 not in self._참조_담보속성_index:
+                    self._참조_담보속성_index[row_담보속성] = []
+                self._참조_담보속성_index[row_담보속성].append(row)
     
     def find_참조문구(self, 코드명: str, 담보속성: str = None, 적용구분: int = None) -> str:
         """
@@ -222,8 +255,6 @@ class CSVLoader:
     def find_참조_by_담보속성(self, 담보속성: str) -> List[Dict[str, Any]]:
         """
         Returns all 참조 rows matching the given 담보속성.
+        Uses pre-built index for O(1) lookup.
         """
-        return [
-            row for row in self.참조_data
-            if row.get('담보속성', '').strip() == 담보속성.strip()
-        ]
+        return self._참조_담보속성_index.get(담보속성.strip(), [])

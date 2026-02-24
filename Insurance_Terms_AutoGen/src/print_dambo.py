@@ -121,7 +121,13 @@ class PrintDambo:
         self.is_독특간편 = False
         self.독특담보그룹 = 0
         self.독립특약명 = ""
-        
+
+        # Source files and documents
+        self.base_files = {}
+        self.csv_loader = None
+        self.source_docs = {}
+        self.출력담보명_groups = {}
+
         # Excel Writer for result saving (lazy init)
         self._excel_writer = None
 
@@ -220,100 +226,100 @@ class PrintDambo:
             # ========================= PHASE 1: COPY & PROCESS TERMS =========================
             if log_callback:
                 log_callback(f"\n📄 Phase 1: 약관 복사 및 태그 처리 ({total_steps}개)...")
-            
+
+            # ===== PRE-COMPUTE: 루프 밖에서 한 번만 계산 (루프당 getattr 제거) =====
+            cached_단체보험 = getattr(self.data, '단체보험', 0)
+            cached_자동갱신형 = getattr(self.data, '자동갱신형', 0)
+            cached_독립특약 = getattr(self.data, '독립특약', 0)
+            has_base_files = hasattr(self, 'base_files') and self.base_files
+            has_source_doc = self.data.arr_source_doc is not None
+
+            # Pre-compute base_files fallback
+            base_files_fallback_path = ""
+            base_files_fallback_name = ""
+            if has_base_files and self.base_files:
+                first_file = list(self.base_files.values())[0]
+                base_files_fallback_path = os.path.dirname(first_file)
+                base_files_fallback_name = os.path.basename(first_file)
+
+            # Pre-sort 출력담보명_groups (avoid re-sorting each iteration)
+            sorted_groups = {}
+            for group_name, group_items in self.출력담보명_groups.items():
+                sorted_items = sorted(group_items, key=lambda x: x[0])
+                sorted_groups[group_name] = [item[1] for item in sorted_items]
+
+            # Pre-compute source doc lookup dict
+            source_doc_lookup = {}
+            if has_source_doc and self.data.arr_source_doc is not None:
+                for j in range(len(self.data.arr_source_doc)):
+                    key = str(self.data.arr_source_doc[j][0]).strip()
+                    source_doc_lookup[key] = str(self.data.arr_source_doc[j][1]).strip()
+
+            # ===== MAIN LOOP =====
             for i, coverage in enumerate(coverage_list):
-                # Extract data from coverage dictionary (from template)
                 dambo_code = str(coverage.get('담보코드', '')).strip()
-                dambo_category = str(coverage.get('구분값', '')).strip()  # From CSV mapping
-                대표담보코드 = str(coverage.get('대표담보코드', '')).strip()  # From CSV mapping
-                
+                dambo_category = str(coverage.get('구분값', '')).strip()
+                대표담보코드 = str(coverage.get('대표담보코드', '')).strip()
+
                 if log_callback:
-                    # Log every 10 items to reduce I/O overhead
-                    if (i + 1) % 10 == 0 or i == 0 or (i + 1) == total_steps:
+                    if (i + 1) % 20 == 0 or i == 0 or (i + 1) == total_steps:
                         log_callback(f"  [{i+1}/{total_steps}] 처리중: {dambo_code} ({대표담보코드})")
-                
-                # Create DamboAttributes from coverage dictionary (from template)
+
+                # Create DamboAttributes (using pre-computed values)
                 dambo_att = DamboAttributes()
                 dambo_att.담보코드 = dambo_code
                 dambo_att.대표담보코드 = 대표담보코드
-                
-                # Set 면책/감액/연장형 from template (already mapped from PGM)
                 dambo_att.면책 = int(coverage.get('면책', 0) or 0)
                 dambo_att.감액 = int(coverage.get('감액', 0) or 0)
                 dambo_att.연장형 = int(coverage.get('연장형', 0) or 0)
                 dambo_att.형구분 = str(coverage.get('형구분', '')).strip()
-                
-                # 모듈 설정
+
                 모듈_val = coverage.get('모듈', '')
-                if 모듈_val:
-                    dambo_att.모듈 = f"{모듈_val}모듈"
-                else:
-                    dambo_att.모듈 = ""
-                
-                dambo_att.단체 = getattr(self.data, '단체보험', 0)
-                dambo_att.자동갱신형 = getattr(self.data, '자동갱신형', 0)
-                
-                # 진단확정, 부모, 예약가입연령 추가
+                dambo_att.모듈 = f"{모듈_val}모듈" if 모듈_val else ""
+                dambo_att.단체 = cached_단체보험
+                dambo_att.자동갱신형 = cached_자동갱신형
                 dambo_att.진단확정 = int(coverage.get('진단확정', 0) or 0)
                 dambo_att.부모 = int(coverage.get('부모', 0) or 0)
                 dambo_att.예약가입연령 = int(coverage.get('예약가입연령', 0) or 0)
-                
-                # 세부보장명 설정
-                dambo_att.세부보장명 = str(coverage.get('세부보장명', '') or 
+                dambo_att.독립특약 = cached_독립특약
+
+                dambo_att.세부보장명 = str(coverage.get('세부보장명', '') or
                                          coverage.get('담보명', '') or '').strip()
-                
-                # 세부보장명_list 설정
-                출력담보명 = str(coverage.get('출력담보명', '') or 
+
+                출력담보명 = str(coverage.get('출력담보명', '') or
                               coverage.get('담보명_출력물명칭', '') or '').strip()
-                
-                if 출력담보명 in self.출력담보명_groups:
-                    # 담보코드 기준으로 정렬
-                    group_items = self.출력담보명_groups[출력담보명]
-                    sorted_items = sorted(group_items, key=lambda x: x[0])  # x[0] is 담보코드
-                    dambo_att.세부보장명_list = [item[1] for item in sorted_items]  # item[1] is 담보명
-                else:
-                    dambo_att.세부보장명_list = [dambo_att.세부보장명]
-                
-                # 독립특약 속성
-                dambo_att.독립특약 = getattr(self.data, '독립특약', 0)
-                
-                # Read PGM Data (CRITICAL: Must read PGM before processing tags)
-                # This updates self.sum_면책, self.sum_감액, self.세부담보_bencoef, etc.
+                dambo_att.세부보장명_list = sorted_groups.get(출력담보명, [dambo_att.세부보장명])
+
+                # Read PGM Data
                 self._read_pgm_loop(dambo_code, dambo_att, i, log_callback)
-                
-                # 독립특약 파일 경로 재지정
-                if self.data.독립특약 != 0:
+
+                if cached_독립특약 != 0:
                     self._set_독특_file_path(dambo_att, 대표담보코드, dambo_code, log_callback)
-                
-                # Find source document info
+
+                # Find source document info (pre-computed lookups)
                 특별약관경로 = ""
                 특별약관파일명 = ""
-                
-                if hasattr(self, 'base_files') and self.base_files:
+
+                if has_base_files:
                     if dambo_category in self.base_files:
                         특별약관file = self.base_files[dambo_category]
                         특별약관경로 = os.path.dirname(특별약관file)
                         특별약관파일명 = os.path.basename(특별약관file)
                     else:
-                        if self.base_files:
-                            first_file = list(self.base_files.values())[0]
-                            특별약관경로 = os.path.dirname(first_file)
-                            특별약관파일명 = os.path.basename(first_file)
-                elif self.data.arr_source_doc is not None:
-                    for j in range(len(self.data.arr_source_doc)):
-                        if dambo_category == str(self.data.arr_source_doc[j][0]).strip():
-                            특별약관경로 = self.data.종속특약경로
-                            특별약관파일명 = str(self.data.arr_source_doc[j][1]).strip()
-                            break
-                
+                        특별약관경로 = base_files_fallback_path
+                        특별약관파일명 = base_files_fallback_name
+                elif dambo_category in source_doc_lookup:
+                    특별약관경로 = self.data.종속특약경로
+                    특별약관파일명 = source_doc_lookup[dambo_category]
+
                 # Copy terms AND identify the range where it was pasted
-                target_range = self._copy_terms(대표담보코드, 특별약관경로, 특별약관파일명, 
+                target_range = self._copy_terms(대표담보코드, 특별약관경로, 특별약관파일명,
                                               dambo_category, dambo_att, log_callback)
-                
+
                 # Process Tags IMMEDIATELY on the target range
                 if target_range:
                     self._revise_terms(dambo_att, i, target_range, log_callback)
-                
+
                 # Update progress
                 if progress_callback:
                     progress_callback(int((i + 1) / total_steps * 100))
@@ -919,12 +925,9 @@ class PrintDambo:
             target_range: Word Range object to process (e.g., pasted text)
         """
         try:
-            if log_callback:
-                log_callback(f"   🏷️ 태그 처리 시작: {dambo_att.담보코드}")
-            
             # Create TagContext from DamboAttributes
             context = create_tag_context_from_dambo_att(dambo_att, self.data)
-            
+
             # Set additional context from PGM data
             context.면책 = 1 if self.sum_면책 > 0 else 0
             context.감액 = 1 if self.sum_감액 > 0 else 0
@@ -932,9 +935,6 @@ class PrintDambo:
             context.감액두번 = self.is감액두번
             context.독립특약 = self.data.독립특약
             context.비갱신 = 1 if self.data.자동갱신형 == 0 else 0
-            
-            if log_callback:
-                log_callback(f"      면책={context.면책}, 감액={context.감액}, 연장형={dambo_att.연장형}")
             
             # Build 감액기간 list from PGM
             if self.세부담보_bencoef:

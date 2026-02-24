@@ -1,0 +1,12 @@
+# PoC Step 3 GPT Version — Dependencies
+# LLM: OpenAI GPT-5.2 via Responses API + file_search (Vector Store)
+
+openai>=1.60.0
+fastapi>=0.100.0
+uvicorn>=0.20.0
+pandas>=2.0.0
+openpyxl>=3.1.0
+pypdf>=3.0.0
+pdfplumber>=0.10.0
+tabulate>=0.9.0
+python-multipart>=0.0.6

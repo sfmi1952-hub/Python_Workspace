@@ -15,8 +15,8 @@ class GeminiCore:
         genai.configure(api_key=api_key)
         
         # Strategy:
-        # Tier 1 (Primary): Gemini 3.0 Pro -> 3.0 Pro Experimental
-        # Tier 2 (Mid): Gemini 2.5 Pro -> 1.5 Pro
+        # Tier 1 (Primary): Gemini 3.1 Pro -> 3.0 Pro -> 1.5 Pro
+        # Tier 2 (Mid): Gemini 3.0 Pro -> 2.5 Pro -> 1.5 Pro
         # Tier 3 (Fast): Gemini 3.0 Flash -> 2.0 Flash -> 1.5 Flash
         
         self.available_models = []
@@ -26,7 +26,7 @@ class GeminiCore:
             print(f"Warning: Could not list models (check API key): {e}")
 
         # 1. Select Initial Primary Model
-        target_model = self._find_model_by_keyword(['gemini-3.0-pro', 'gemini-3-pro'])
+        target_model = self._find_model_by_keyword(['gemini-3.1-pro', 'gemini-3.1', 'gemini-3.0-pro', 'gemini-3-pro'])
         if not target_model:
             # Fallback to 1.5 Pro as 'Primary' if 3.0 not found
              target_model = 'gemini-1.5-pro'
@@ -101,7 +101,7 @@ class GeminiCore:
     def generate_content(self, contents, request_options=None, retries=3, base_delay=10):
         """
         Wrapper for model.generate_content with 3-stage fallback for 429 errors.
-        Chain: 3.0 Pro -> 2.5 Pro -> 3.0 Flash
+        Chain: 3.1 Pro -> 3.0 Pro -> 3.0 Flash
         """
         if not self.model:
              raise ValueError("Model not initialized")
@@ -130,7 +130,7 @@ class GeminiCore:
                     print(f"WARNING: API Quota Hit ({e}).")
                     
                     # --- Fallback Logic ---
-                    # Current Strategy: 3.0 Pro -> 2.5/1.5 Pro -> 3.0/2.0 Flash
+                    # Current Strategy: 3.1 Pro -> 3.0/2.5 Pro -> 3.0/2.0 Flash
                     
                     next_model = None
                     curr = self.model_name.lower()
@@ -139,10 +139,10 @@ class GeminiCore:
                     # Implementation detail: generic detection if we are not yet on 'fallback' tiers
                     if "flash" not in curr and ("2.5" not in curr and "1.5" not in curr):
                         # Attempt switch to Tier 2 (2.5 Pro or 1.5 Pro)
-                        print("  > Tier 1 Exhausted. Switching to Tier 2 (2.5/1.5 Pro)...")
-                        
-                        # Find 2.5 Pro
-                        tier2 = self._find_model_by_keyword(['gemini-2.5-pro', 'gemini-2.5'])
+                        print("  > Tier 1 Exhausted. Switching to Tier 2 (3.0/2.5 Pro)...")
+
+                        # Find 3.0 Pro or 2.5 Pro
+                        tier2 = self._find_model_by_keyword(['gemini-3.0-pro', 'gemini-3-pro', 'gemini-2.5-pro', 'gemini-2.5'])
                         if not tier2: tier2 = 'gemini-1.5-pro'
                         
                         next_model = tier2

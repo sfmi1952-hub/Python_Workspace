@@ -55,45 +55,62 @@ class TagProcessor:
     def __init__(self, csv_loader=None):
         """
         Initialize tag processor.
-        
+
         Args:
             csv_loader: CSVLoader instance for 참조 data lookup
         """
         self.csv_loader = csv_loader
-        
-        # 치환태그 패턴 (참조시트에서 치환)
+
+        # 치환태그 패턴 (참조시트에서 치환) - PRE-COMPILED for speed
         self.substitution_patterns = {
-            r'\{단체(\d*)\}': self._replace_단체,
-            r'\{감액(\d*)\}': self._replace_감액,
-            r'\{감액2-(\d+)\}': self._replace_감액2,
-            r'\{연장형(\d*)\}': self._replace_연장형,
-            r'\{부모(\d*)\}': self._replace_부모,
-            r'\{예약가입(\d*)\}': self._replace_예약가입,
-            r'\{진단확정(\d+)\}': self._replace_진단확정,
-            r'\{세부보장(\d+)\}': self._replace_세부보장,
-            r'\{보통약관 해약환급금\}': self._replace_보통약관_해약환급금,
+            re.compile(r'\{단체(\d*)\}'): self._replace_단체,
+            re.compile(r'\{감액(\d*)\}'): self._replace_감액,
+            re.compile(r'\{감액2-(\d+)\}'): self._replace_감액2,
+            re.compile(r'\{연장형(\d*)\}'): self._replace_연장형,
+            re.compile(r'\{부모(\d*)\}'): self._replace_부모,
+            re.compile(r'\{예약가입(\d*)\}'): self._replace_예약가입,
+            re.compile(r'\{진단확정(\d+)\}'): self._replace_진단확정,
+            re.compile(r'\{세부보장(\d+)\}'): self._replace_세부보장,
+            re.compile(r'\{보통약관 해약환급금\}'): self._replace_보통약관_해약환급금,
         }
-        
-        # PGM에서 읽어 치환하는 태그
+
+        # Quick-check keywords to skip irrelevant patterns (avoid regex on non-matching text)
+        self._substitution_keywords = {
+            '단체': [], '감액': [], '감액2-': [], '연장형': [], '부모': [],
+            '예약가입': [], '진단확정': [], '세부보장': [], '보통약관': [],
+        }
+        for compiled_re, handler in self.substitution_patterns.items():
+            # Extract the base keyword from the pattern for fast pre-check
+            pattern_str = compiled_re.pattern
+            for keyword in self._substitution_keywords:
+                if keyword in pattern_str:
+                    self._substitution_keywords[keyword].append((compiled_re, handler))
+                    break
+
+        # PGM에서 읽어 치환하는 태그 - PRE-COMPILED
         self.pgm_patterns = {
-            r'\{감액기간(\d+)-(\d+)\}': self._replace_감액기간,
-            r'\{지급률(\d+)-(\d+)-(\d+)\}(\*|\/)?(\d+\.?\d*)?(%)?': self._replace_지급률,
+            re.compile(r'\{감액기간(\d+)-(\d+)\}'): self._replace_감액기간,
+            re.compile(r'\{지급률(\d+)-(\d+)-(\d+)\}(\*|\/)?(\d+\.?\d*)?(%)?'): self._replace_지급률,
         }
-        
-        # 출력조정태그 패턴
-        # -1~-2: 속성 해당하면 태그만 삭제, 아니면 태그+사이내용 삭제
-        # -3~-4: 속성 해당하면 태그+사이내용 삭제, 아니면 태그만 삭제
+
+        # 출력조정태그 패턴 - PRE-COMPILED
         self.output_control_patterns = [
-            (r'\{면책0-(\d)\}', '면책'),
-            (r'\{감액있음(\d+)-(\d)\}', '감액'),
-            (r'\{비갱신(\d+)-(\d)\}', '비갱신'),
-            (r'\{갱신(\d+)-(\d)\}', '갱신'),
-            (r'\{감액한번(\d+)-(\d)\}', '감액한번'),
-            (r'\{감액두번(\d+)-(\d)\}', '감액두번'),
-            (r'\{진단확정(\d+)-(\d)\}', '진단확정'),
-            (r'\{자동갱신형(\d+)-(\d)\}', '자동갱신형'),
-            (r'\{독립특약0-(\d)\}', '독립특약'),
+            (re.compile(r'\{면책0-(\d)\}'), '면책'),
+            (re.compile(r'\{감액있음(\d+)-(\d)\}'), '감액'),
+            (re.compile(r'\{비갱신(\d+)-(\d)\}'), '비갱신'),
+            (re.compile(r'\{갱신(\d+)-(\d)\}'), '갱신'),
+            (re.compile(r'\{감액한번(\d+)-(\d)\}'), '감액한번'),
+            (re.compile(r'\{감액두번(\d+)-(\d)\}'), '감액두번'),
+            (re.compile(r'\{진단확정(\d+)-(\d)\}'), '진단확정'),
+            (re.compile(r'\{자동갱신형(\d+)-(\d)\}'), '자동갱신형'),
+            (re.compile(r'\{독립특약0-(\d)\}'), '독립특약'),
         ]
+
+        # Pre-compiled cleanup pattern
+        self._cleanup_pattern = re.compile(
+            r'\{(?:연장형|부모|예약가입|단체|감액|감액2-|진단확정|세부보장|감액기간|지급률'
+            r'|면책|감액있음|비갱신|갱신|감액한번|감액두번|자동갱신형|독립특약)\d*(?:-\d+)?(?:-\d+)?\}'
+        )
     
     def process_all_tags(self, text: str, context: TagContext) -> str:
         """
@@ -128,11 +145,11 @@ class TagProcessor:
             text = self._process_single_output_tag(text, pattern, attr_name, context)
         return text
     
-    def _process_single_output_tag(self, text: str, pattern: str, attr_name: str, 
+    def _process_single_output_tag(self, text: str, pattern, attr_name: str,
                                    context: TagContext) -> str:
-        """Process a single type of output control tag."""
-        # Find all pairs of tags
-        regex = re.compile(pattern)
+        """Process a single type of output control tag. Accepts pre-compiled pattern."""
+        # Use pre-compiled pattern directly (no re.compile overhead)
+        regex = pattern if hasattr(pattern, 'finditer') else re.compile(pattern)
         matches = list(regex.finditer(text))
         
         if not matches:
@@ -228,15 +245,15 @@ class TagProcessor:
         return False
     
     def _process_substitution_tags(self, text: str, context: TagContext) -> str:
-        """Process substitution tags using 참조 data."""
-        for pattern, handler in self.substitution_patterns.items():
-            text = re.sub(pattern, lambda m: handler(m, context), text)
+        """Process substitution tags using 참조 data. Uses pre-compiled patterns."""
+        for compiled_re, handler in self.substitution_patterns.items():
+            text = compiled_re.sub(lambda m: handler(m, context), text)
         return text
-    
+
     def _process_pgm_tags(self, text: str, context: TagContext) -> str:
-        """Process PGM-based tags (감액기간, 지급률)."""
-        for pattern, handler in self.pgm_patterns.items():
-            text = re.sub(pattern, lambda m: handler(m, context), text)
+        """Process PGM-based tags (감액기간, 지급률). Uses pre-compiled patterns."""
+        for compiled_re, handler in self.pgm_patterns.items():
+            text = compiled_re.sub(lambda m: handler(m, context), text)
         return text
     
     # ==================== 치환태그 핸들러 ====================
@@ -442,12 +459,7 @@ class TagProcessor:
             # Only proceed if there are tags in the range
             if '{' not in full_text:
                 return
-            
-            # DEBUG: Print all apparent tags
-            if log_callback:
-                raw_tags = re.findall(r'\{[^}]+\}', full_text)
-                print(f"      [DEBUG] Raw tags in text: {raw_tags}")
-            
+
             # Check if output control tags exist (fast string check)
             has_output_tags = any(tag in full_text for tag in [
                 '{면책0-', '{독립특약0-', '{비갱신', '{갱신', '{자동갱신형',
@@ -473,53 +485,42 @@ class TagProcessor:
     def _range_cleanup_remaining_tags(self, range_obj, cached_text=None, log_callback=None):
         """
         Final cleanup: Remove any remaining unused tags in the range.
-        
-        Args:
-            range_obj: Word Range object
-            cached_text: Pre-loaded text (optional)
-            log_callback: Optional logging callback
+        Uses manual Find/Execute loop (wdReplaceAll doesn't work on Range).
         """
         try:
-            # Use cached text if provided, otherwise read from range
             full_text = cached_text if cached_text else range_obj.Text
-            
+
             if '{' not in full_text:
-                return  # No tags to clean
-            
-            # Collect all tags to delete using regex
-            tags_to_delete = set()
-            
-            # Combined pattern for all tag types
-            combined_pattern = r'\{(?:연장형|부모|예약가입|단체|감액|감액2-|진단확정|세부보장|감액기간|지급률|면책|감액있음|비갱신|갱신|감액한번|감액두번|자동갱신형|독립특약)\d*(?:-\d+)?(?:-\d+)?\}'
-            
-            matches = re.findall(combined_pattern, full_text)
-            tags_to_delete.update(matches)
-            
+                return
+
+            tags_to_delete = set(self._cleanup_pattern.findall(full_text))
+
             if not tags_to_delete:
-                return  # Nothing to clean
-            
-            # Batch delete all found tags WITHIN the range
-            find = range_obj.Find
-            
+                return
+
+            doc = range_obj.Document
+
             for tag in tags_to_delete:
                 try:
-                    # Reset formatting each time
+                    search_range = doc.Range(range_obj.Start, range_obj.End)
+                    find = search_range.Find
                     find.ClearFormatting()
                     find.Replacement.ClearFormatting()
-                    
-                    # Execute replace on the range
-                    find.Execute(
-                        FindText=tag,
-                        ReplaceWith="",
-                        Replace=2,  # wdReplaceAll
-                        MatchWholeWord=False,
-                        MatchCase=True,
-                        Forward=True,
-                        Wrap=0  # wdFindStop - Important for Range!
-                    )
+                    find.Text = tag
+                    find.Forward = True
+                    find.Wrap = 0
+                    find.MatchCase = True
+                    find.MatchWholeWord = False
+                    find.MatchWildcards = False
+
+                    for _ in range(50):
+                        if not find.Execute():
+                            break
+                        search_range.Text = ""
+                        search_range.Collapse(0)
                 except:
                     pass
-                    
+
         except Exception as e:
             if log_callback:
                 log_callback(f"   ⚠️ 태그 정리 오류: {e}")
@@ -653,160 +654,129 @@ class TagProcessor:
     def _range_find_replace_tags(self, range_obj, context: TagContext, doc_text: str, log_callback=None):
         """
         Perform find & replace on range.
+        Uses proven manual loop: Range created ONCE per tag, then Find/Replace in loop.
         """
         try:
-            # Build replacement dictionary (filtered by what's in doc/range)
             replacements = self._build_replacement_dict(context, doc_text)
-            
-            if log_callback:
-                print(f"      [DEBUG] Replacements found: {list(replacements.keys())}")
-            
+
             if not replacements:
                 return
-            
-            # Batch execute replacements
+
             doc = range_obj.Document
-            
-            # FORCE OFF TrackRevisions if ON (Safety Net)
+
             if doc.TrackRevisions:
-                if log_callback:
-                    print(f"      [WARNING] TrackRevisions was ON. Turning OFF.")
                 doc.TrackRevisions = False
-            
+
             for find_text, replace_text in replacements.items():
                 try:
-                    # Create a FRESH range for each search
+                    # Create range ONCE per tag
                     search_range = doc.Range(range_obj.Start, range_obj.End)
-                    
                     find = search_range.Find
                     find.ClearFormatting()
                     find.Replacement.ClearFormatting()
                     find.Text = find_text
                     find.Forward = True
-                    find.Wrap = 0 # wdFindStop
+                    find.Wrap = 0  # wdFindStop
                     find.MatchCase = True
                     find.MatchWholeWord = False
                     find.MatchWildcards = False
-                    
-                    # Manual Replacement Loop
-                    replace_count = 0
-                    max_loop = 100
-                    
-                    while replace_count < max_loop:
-                        # Execute: Returns True if found
-                        found = find.Execute()
-                        
-                        if not found:
+
+                    for _ in range(50):
+                        if not find.Execute():
                             break
-                        
-                        # Apply replacement MANUALLY
                         search_range.Text = replace_text
-                        replace_count += 1
-                        
-                        # Collapse to end
-                        search_range.Collapse(0) # wdCollapseEnd
-                            
-                except Exception as e:
-                    pass
-                finally:
+                        search_range.Collapse(0)  # wdCollapseEnd
+                except Exception:
                     pass
 
         except Exception as e:
             if log_callback:
                 log_callback(f"   ❌ 태그 치환 오류: {e}")
     
-    def _build_replacement_dict(self, context: TagContext, doc_text: str = "") -> Dict[str, str]:
-        """Build dictionary of tag -> replacement text. OPTIMIZED: Only includes tags found in doc."""
-        replacements = {}
-        
-        # Helper to check number range (e.g. 1~20)
-        def process_numbered_tags(tag_base, context_attr_name, context_val, is_attr_check=True):
-            # Check for base tag (e.g., {단체})
-            tag_plain = f"{{{tag_base}}}"
-            if tag_plain in doc_text:
-                if is_attr_check:
-                    적용구분 = 1 if context_val > 0 else 0
-                    replacements[tag_plain] = self._lookup_참조(tag_plain, context_attr_name, 적용구분)
-                else:
-                    # Special handling if needed
-                    pass
-            
-            # Check for numbered tags (e.g., {단체1} ~ {단체20})
-            for n in range(1, 21):
-                tag_num = f"{{{tag_base}{n}}}" # e.g., {단체1}
-                if tag_num in doc_text:
-                    if is_attr_check:
-                        적용구분 = 1 if context_val > 0 else 0
-                        
-                        # 1. Try exact match first (e.g., "{단체1}" -> lookup "단체1")
-                        # The _lookup_참조 method expects the full tag string (e.g., "{단체1}")
-                        # and the attribute name (e.g., "단체")
-                        val = self._lookup_참조(tag_num, context_attr_name, 적용구분)
-                        
-                        # _lookup_참조 returns "" if found with empty value, or None if not found at all
-                        if val is not None: # If an entry was found (even if empty string)
-                            replacements[tag_num] = val
-                            continue # Move to the next numbered tag
-                        
-                        # 2. Fallback: if specific numbered tag not found, use base tag (e.g., "{단체1}" -> lookup "단체")
-                        val = self._lookup_참조(tag_plain, context_attr_name, 적용구분)
-                        if val is not None: # If an entry was found for the base tag
-                            replacements[tag_num] = val
-                        else:
-                            # If neither specific nor base tag found, it might be an unhandled tag.
-                            # For now, we leave it or set to empty if we want to be aggressive.
-                            # _lookup_참조 returns None if not found, so no replacement is made.
-                            pass
+    # Pre-compiled patterns for _build_replacement_dict (class-level, compiled once)
+    _RE_SUBSTITUTION_TAG = re.compile(
+        r'\{(단체|감액|연장형|부모|예약가입|진단확정|세부보장|감액2-|감액기간|보통약관 해약환급금)(\d*)\}'
+    )
+    _RE_감액기간 = re.compile(r'\{감액기간(\d+)-(\d+)\}')
+    _RE_세부보장 = re.compile(r'\{세부보장(\d+)\}')
 
-        # 단체 태그
-        process_numbered_tags("단체", "단체", context.단체)
-        
-        # 감액 태그
-        process_numbered_tags("감액", "감액", context.감액)
-        
-        # 감액2-N 태그 (별도 로직 필요)
-        for n in range(1, 10):  # Check up to 10
-            코드명 = f"{{감액2-{n}}}"
-            if 코드명 in doc_text:
+    def _build_replacement_dict(self, context: TagContext, doc_text: str = "") -> Dict[str, str]:
+        """
+        Build dictionary of tag -> replacement text.
+        Uses a single regex pass to extract only substitution tags (not output control tags).
+        """
+        replacements = {}
+
+        if not doc_text or '{' not in doc_text:
+            return replacements
+
+        # ===== SINGLE REGEX PASS: Extract only substitution tags =====
+        # This avoids matching output control tags like {감액있음1-2}, {면책0-1} etc.
+        found_tags = set(self._RE_SUBSTITUTION_TAG.findall(doc_text))
+        # Also find multi-part tags separately
+        found_감액기간 = self._RE_감액기간.findall(doc_text)
+        found_세부보장 = self._RE_세부보장.findall(doc_text)
+
+        # Process simple substitution tags: {base} or {baseN}
+        tag_handlers = {
+            '단체': ('단체', context.단체),
+            '감액': ('감액', context.감액),
+            '연장형': ('연장형', context.연장형),
+            '부모': ('부모', context.부모),
+            '예약가입': ('예약가입연령', context.예약가입연령),
+            '진단확정': ('진단확정', context.진단확정),
+        }
+
+        for base, n_str in found_tags:
+            if base in tag_handlers:
+                attr_name, attr_val = tag_handlers[base]
+                적용구분 = 1 if attr_val > 0 else 0
+                tag_full = f"{{{base}{n_str}}}"
+
+                # Try exact lookup first, then fallback to base
+                val = self._lookup_참조(tag_full, attr_name, 적용구분)
+                if val is not None:
+                    replacements[tag_full] = val
+                elif n_str:
+                    tag_plain = f"{{{base}}}"
+                    val = self._lookup_참조(tag_plain, attr_name, 적용구분)
+                    if val is not None:
+                        replacements[tag_full] = val
+
+            elif base == '감액2-' and n_str:
                 적용구분 = 1 if context.감액 > 0 else 0
-                replacements[코드명] = self._lookup_참조("{감액2}", "감액", 적용구분)
-        
-        # 연장형 태그
-        process_numbered_tags("연장형", "연장형", context.연장형)
-        
-        # 부모 태그
-        process_numbered_tags("부모", "부모", context.부모)
-        
-        # 예약가입 태그
-        process_numbered_tags("예약가입", "예약가입연령", context.예약가입연령)
-        
-        # 진단확정N 태그
-        for n in range(1, 21):
-            코드명 = f"{{진단확정{n}}}"
-            if 코드명 in doc_text:
-                적용구분 = 1 if context.진단확정 > 0 else 0
-                replacements[코드명] = self._lookup_참조(코드명, "진단확정", 적용구분)
-        
-        # 세부보장N 태그 (Aggressive Cleanup: Check 1~20)
-        for n in range(1, 21):
-            코드명 = f"{{세부보장{n}}}"
-            if 코드명 in doc_text:
-                idx = n - 1
-                if idx < len(context.세부보장명_list):
-                    세부보장명 = context.세부보장명_list[idx]
-                    replacements[코드명] = f"「{세부보장명}」" if 세부보장명 else ""
-                else:
-                    # List doesn't have this index -> Delete tag
-                    replacements[코드명] = ""
-        
+                tag_full = f"{{감액2-{n_str}}}"
+                val = self._lookup_참조("{감액2}", "감액", 적용구분)
+                if val is not None:
+                    replacements[tag_full] = val
+
+            elif base == '보통약관 해약환급금':
+                tag_full = "{보통약관 해약환급금}"
+                val = self._lookup_참조(tag_full, None, None)
+                if val is not None:
+                    replacements[tag_full] = val
+
+        # 세부보장N 태그
+        for (n_str,) in found_세부보장:
+            idx = int(n_str) - 1
+            tag_full = f"{{세부보장{n_str}}}"
+            if idx < len(context.세부보장명_list):
+                세부보장명 = context.세부보장명_list[idx]
+                replacements[tag_full] = f"「{세부보장명}」" if 세부보장명 else ""
+            else:
+                replacements[tag_full] = ""
+
         # 감액기간N-K 태그
-        for n, 기간_list in enumerate(context.감액기간_list, 1):
-            sorted_list = sorted(기간_list)
-            for k, 기간 in enumerate(sorted_list, 1):
-                코드명 = f"{{감액기간{n}-{k}}}"
-                if 코드명 in doc_text:
-                    replacements[코드명] = self._format_기간(기간)
-        
+        if found_감액기간 and context.감액기간_list:
+            for n_str, k_str in found_감액기간:
+                n_idx = int(n_str) - 1
+                k_idx = int(k_str) - 1
+                tag_full = f"{{감액기간{n_str}-{k_str}}}"
+                if n_idx < len(context.감액기간_list):
+                    sorted_list = sorted(context.감액기간_list[n_idx])
+                    if k_idx < len(sorted_list):
+                        replacements[tag_full] = self._format_기간(sorted_list[k_idx])
+
         return replacements
 
 

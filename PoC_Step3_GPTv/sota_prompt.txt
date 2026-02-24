@@ -1,0 +1,111 @@
+[Attributes]
+            ATTRIBUTE_CONFIGS = [
+                {"key": "Inferred_Diagnosis_Code", "name": "진단코드 (Diagnosis Code)", "keywords": ["진단", "KCD", "Diagnosis", "질병"]},
+                {"key": "Inferred_Exemption_Code", "name": "면책코드 (Exemption Code)", "keywords": ["면책", "Exemption"]},
+                {"key": "Inferred_EDI_Code", "name": "EDI코드 (EDI Code)", "keywords": ["EDI", "수술", "처치"]},
+                {"key": "Inferred_Hospital_Grade", "name": "병원등급 (Hospital Grade)", "keywords": ["병원", "등급", "Grade"]},
+                {"key": "Inferred_Hospital_Class", "name": "병원분류 (Hospital Classification)", "keywords": ["병원", "분류", "Class"]},
+                {"key": "Inferred_Accident_Type", "name": "사고유형 (Accident Type)", "keywords": ["사고", "재해", "Accident"]},
+                {"key": "Inferred_Admission_Limit", "name": "입원한도일수 (Admission Limit Days)", "keywords": ["입원", "한도", "Admission"]},
+                {"key": "Inferred_Min_Admission", "name": "최소입원일수 (Minimum Admission Days)", "keywords": ["최소", "입원", "Admission"]},
+                {"key": "Inferred_Coverage_Period", "name": "보장기간 (Coverage Period)", "keywords": ["보장", "기간", "Period"]},
+            ]
+
+
+[Phase 1] 
+                          # Prompt
+                            rule_prompt = f"""
+                            **Role**: 보험 약관 분석 전문가.
+                            **Goal**: 
+                            제공된 참조 문서({group_name})를 분석하여, 향후 Phase 2에서 **'담보명'과 '세부담보템플릿명'으로부터 정확한 '{attr_name}'를 도출할 수 있도록 돕는 추론 로직(Inference Logic)**을 추출하세요.
+                            
+                            **Target Attribute**: {attr_name}
+                            
+                            **Mapping Tables**:
+                            {relevant_context}
+                            
+                            **Instructions**:
+                            1. **(필수) Logic Isolation**: 오직 **'{attr_name}'** 추출에 필요한 로직만 작성하세요. 다른 항목(예: {attr_name}이 아닌 것들)에 대한 내용은 **절대 포함하지 마세요**.
+                            2. **Inference Basis**: '세부담보템플릿명' 뿐만 아니라, **'담보명'**까지 종합적으로 고려해야 정확한 **'{attr_name}'** 값을 찾을 수 있음을 명심하고, 이를 위한 판단 기준을 추출하세요.
+                            3. **(필수) '별표(Appendix)' 참조**: 약관이나 참조 문서에 '별표'가 포함되어 있다면, 해당 내용을 **최우선**으로 확인하고 로직에 반영하세요.
+                            4. **'{attr_name}'**와 관련된 정의, 별표, 기준을 찾으세요.
+                            
+                            **[Special Instructions for Diagnosis Code]**:
+                            {'''
+                            - **(중요) 별표/부속서 추적**: 약관 본문에서 "별표 X를 참조한다"는 식의 문구를 찾고, 문서 뒷부분의 해당 별표에서 **질병 기호(KCD 코드)** 범위를 찾아내세요.
+                            - **매핑 전략**: 약관의 질병 정의(예: C00~C97)가 매핑 테이블의 분류번호(예: 0A1)와 어떻게 연결되는지 패턴을 분석하세요.
+                            ''' if attr_key == 'Inferred_Diagnosis_Code' else ''}
+
+                            - **(중요) {attr_name}이 'EDI코드'인 경우**: 설명이 부족하면 의료 지식을 동원해 추론 로직을 보강하세요.
+                            - **(중요) {attr_name}이 '면책코드'인 경우**: 
+                                1. **'보장하지 않는 사항(Exclusions)'**만 분석하세요.
+                                2. **제외 대상**: '진단 코드', '질병 정의', '수술 정의'는 절대 포함하지 마세요. 오직 **'지급하지 않는 사유'**와 관련된 코드만 찾으세요.
+                            - **(중요) {attr_name}이 '입원한도일수'인 경우**: 약관의 일수(예: 120일)를 코드(예: L01)로 변환하는 규칙을 찾으세요.
+                            - **(중요) {attr_name}이 '최소입원일수'인 경우**: 매핑 테이블 없음. 약관의 **실제 일수(숫자)**를 추출하는 규칙을 찾으세요.
+                            
+                            **Output Requirements (최대한 자세히 기술하세요)**:
+                            1. **{attr_name} 정의 분석 (Definition Patterns)**:
+                               - 해당 세부담보템플릿이 보장하는 **'{attr_name}'**의 약관상 정의 및 핵심 키워드/조건.
+                               - (중요) 관련 '별표(Appendix)' 번호 및 해당 별표에 명시된 주요 기준/코드 범위.
+                            2. **매핑 로직 (Mapping Strategy)**:
+                               - 약관상 정의된 범위가 매핑 테이블의 어떤 '코드/값' 범위에 해당하는지 기술.
+                               - 예: "약관의 정의(A) -> 매핑 테이블의 코드(B)로 매핑"
+                            3. **포함/제외 세부 조건 (Inclusion/Exclusion Rules)**:
+                               - 특정 조건 제외 혹은 특정 상태(갱신형 등)에 따른 변형 규칙.
+                            4. **위치 및 문맥 단서 (Context Clues)**:
+                               - 정의가 주로 등장하는 조항 위치나 문서 내 표현 방식.
+
+                            결과에 '관련 내용 없음'만 있다면 출력하지 마세요. 유의미한 규칙만 출력하세요.
+                            """
+
+[Phase 2]
+               prompt = f"""
+                **Task**: 제공된 '담보명'과 '세부담보템플릿명', 그리고 제공된 '약관(PDF)', '매핑 테이블', '추출된 로직'을 종합하여 **'{attr_name}'**를 추론하세요.
+                
+                **Attribute**: {attr_name}
+                
+                **Mapping Tables**:
+                {relevant_context}
+                
+                **Extracted Rules**:
+                {logic_content}
+                
+                **Input Items**:
+                {all_items_str}
+                
+                **Instructions**:
+                1. 입력된 '담보명'과 '세부담보템플릿명' 쌍을 순서대로 분석하세요.
+                2. **약관 내 '별표(Appendix)' 우선 참조**: 약관 본문에서 **'{attr_name}'** 관련하여 '별표'를 참조하라고 되어 있다면, 해당 별표 페이지를 찾아 그 내용을 최우선 근거로 삼으세요.
+                3. **외부 지식 활용(Search Fallback)**: 만약 타겟 약관 내에서 직접적인 정보나 별표 내용을 찾을 수 없는 경우, 해당 담보명에 대한 **표준 보험/의료 지식(예: KCD, 표준수술분류 등)**을 활용하여 가장 타당한 값을 도출하세요.
+                4. **inferred_code (추론된 값)**:
+                   - 타겟 약관(특히 별표) 및 외부 지식을 활용하여 가장 적절한 **'{attr_name}'** 값을 선택하세요.
+                   - 매칭되는 코드가 명확하지 않은 경우, 가장 근접한 분류를 선택하거나 빈칸("")으로 두세요.
+                5. **ref_sentence (근거 문장)**:
+                   - 약관 또는 별표에서 찾은 **정의 문장 원문**을 그대로 기입하세요.
+                   - 외부 지식을 활용한 경우 "[외부 지식: ...에 해당함]" 형식으로 기입하세요.
+                   - 문장 뒤에 **[선정 이유]**를 덧붙여주세요.
+                6. **ref_page**: 해당 내용이 위치한 타겟 약관의 페이지 번호를 숫자로 기입하세요. (외부 지식인 경우 '0' 기입)
+
+                {'''
+                **[Special Instructions for Diagnosis Code (Step 2 Logic)]**:
+                - **외부 지식 활용**: 타겟 약관 내에서 직접적인 KCD 코드나 별표 정보를 찾을 수 없는 경우, 해당 담보명에 대한 **표준 KCD(한국표준질병사인분류) 지식**을 활용하여 '분류번호'를 도출하세요.
+                ''' if attr_key == 'Inferred_Diagnosis_Code' else ''}
+
+                {'''
+                **[Special Instructions for Exemption Code]**:
+                - **(중요) 진단코드(Diagnosis Code) 아님**: 이 항목은 질병 코드가 아니라, **'보장하지 않는 사항(면책 사유)'**에 대한 코드입니다. 절대 KCD 코드(예: C00, I20)를 넣지 마세요.
+                - **빈 값 처리**: 약관에 **'보장하지 않는 사항'**이나 **'면책 사유'**로 명시된 코드가 없다면, 추론값을 억지로 채우지 말고 **빈칸("")**으로 두세요.
+                - **타겟**: 오직 '약관에서 규정하는 면책 코드'만 찾으세요.
+                ''' if attr_key == 'Inferred_Exemption_Code' else ''}
+                
+                **Output JSON**:
+                [
+                  {{
+                    "benefit_name": "...",
+                    "template_name": "...",
+                    "inferred_code": "...", 
+                    "ref_page": "...",
+                    "ref_sentence": "..."
+                  }}
+                ]
+                """
