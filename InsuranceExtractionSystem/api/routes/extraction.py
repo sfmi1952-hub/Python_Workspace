@@ -29,6 +29,7 @@ router = APIRouter(prefix="/extraction", tags=["extraction"])
 @router.post("/analyze", response_model=ExtractionResponse)
 async def analyze(
     pdf_file: UploadFile = File(...),
+    excel_file: UploadFile = File(...),
     mapping_file: UploadFile = File(None),
     reference_file: UploadFile = File(None),
     product_code: str = Form(""),
@@ -43,7 +44,7 @@ async def analyze(
 ):
     """단건 약관 추출 분석"""
     from modules.m5_extraction_engine.model_router import (
-        get_provider, configure_provider, get_secondary_provider,
+        get_provider, get_secondary_provider,
     )
     from modules.m5_extraction_engine.engine import ExtractionEngine
     from modules.m5_extraction_engine.ensemble import EnsembleVerifier
@@ -56,73 +57,45 @@ async def analyze(
         pdf_path = tmp_dir / pdf_file.filename
         pdf_path.write_bytes(await pdf_file.read())
 
-        mapping_path = None
+        excel_path = tmp_dir / excel_file.filename
+        excel_path.write_bytes(await excel_file.read())
+
+        mapping_paths = []
         if mapping_file:
             mapping_path = tmp_dir / mapping_file.filename
             mapping_path.write_bytes(await mapping_file.read())
+            mapping_paths.append(str(mapping_path))
 
-        reference_path = None
+        ref_files = []
         if reference_file:
             reference_path = tmp_dir / reference_file.filename
             reference_path.write_bytes(await reference_file.read())
+            ref_files.append(str(reference_path))
 
         # Provider 초기화
         try:
-            configure_provider(provider)
             primary = get_provider(provider)
         except Exception as e:
             raise HTTPException(status_code=400, detail=f"Provider 초기화 실패: {e}")
 
         engine = ExtractionEngine(primary)
 
-        # 파일 그룹 구성
-        file_groups = engine._group_files(
-            [str(pdf_path)]
-            + ([str(mapping_path)] if mapping_path else [])
-            + ([str(reference_path)] if reference_path else []),
-        )
-
         # 추출 실행
         results = engine.process(
-            pdf_path=str(pdf_path),
-            mapping_path=str(mapping_path) if mapping_path else None,
-            reference_path=str(reference_path) if reference_path else None,
-            product_code=product_code,
-            benefit_code=benefit_code,
-            sub_benefit_code=sub_benefit_code,
-            benefit_name=benefit_name,
-            template_name=template_name,
+            target_pdf=str(pdf_path),
+            target_excel=str(excel_path),
+            mapping_files=mapping_paths,
+            ref_files=ref_files,
         )
 
-        # Ensemble 검증
-        ensemble_used = False
-        if ensemble and secondary_provider:
-            try:
-                configure_provider(secondary_provider)
-                secondary = get_provider(secondary_provider)
-                secondary_engine = ExtractionEngine(secondary)
-
-                secondary_results = secondary_engine.process(
-                    pdf_path=str(pdf_path),
-                    mapping_path=str(mapping_path) if mapping_path else None,
-                    reference_path=str(reference_path) if reference_path else None,
-                    product_code=product_code,
-                    benefit_code=benefit_code,
-                    sub_benefit_code=sub_benefit_code,
-                    benefit_name=benefit_name,
-                    template_name=template_name,
-                )
-
-                verifier = EnsembleVerifier()
-                results = verifier.verify_batch(results, secondary_results)
-                ensemble_used = True
-            except Exception as e:
-                print(f"[Ensemble] 보조 Provider 오류: {e}")
+        if "error" in results:
+            raise HTTPException(status_code=500, detail=results["error"])
 
         # 결과 변환
+        extraction_items = results.get("results", [])
         attr_results = []
         overall_conf = 0.0
-        for r in results:
+        for r in extraction_items:
             conf = r.get("confidence", 0.0)
             if isinstance(conf, str):
                 try:
@@ -131,33 +104,16 @@ async def analyze(
                     conf = 0.0
             attr_results.append(AttributeResult(
                 attribute_name=r.get("attribute", ""),
-                attribute_label=r.get("label", ""),
-                extracted_value=r.get("value", ""),
+                attribute_label=r.get("benefit_name", ""),
+                extracted_value=r.get("inferred_code", ""),
                 confidence=conf,
                 source=r.get("source", provider),
-                reasoning=r.get("reasoning", ""),
+                reasoning=r.get("ref_sentence", ""),
             ))
             overall_conf += conf
 
         if attr_results:
             overall_conf /= len(attr_results)
-
-        # DB 저장
-        for ar in attr_results:
-            db.add(ExtractionResult(
-                policy_id=None,
-                product_code=product_code,
-                benefit_code=benefit_code,
-                sub_benefit_code=sub_benefit_code,
-                benefit_name=benefit_name,
-                template_name=template_name,
-                attribute_name=ar.attribute_name,
-                extracted_value=ar.extracted_value,
-                confidence=ar.confidence,
-                source=ar.source,
-                verification_status="auto_confirmed" if ar.confidence >= settings.auto_confirm_threshold else "pending_review",
-            ))
-        db.commit()
 
         elapsed = round(time.time() - start_time, 2)
 
@@ -169,7 +125,7 @@ async def analyze(
             results=attr_results,
             overall_confidence=round(overall_conf, 1),
             provider_used=provider,
-            ensemble_used=ensemble_used,
+            ensemble_used=False,
             processing_time=elapsed,
         )
 

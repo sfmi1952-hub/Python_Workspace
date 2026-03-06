@@ -281,7 +281,7 @@ InsuranceExtractionSystem/
 ├── data/                         # 런타임 데이터
 │   ├── extraction.db             #   SQLite DB
 │   ├── policy_storage/           #   약관 PDF 파일
-│   ├── rag_cache/                #   전처리 Markdown 캐시
+│   ├── preprocessor_cache/       #   전처리 Markdown 캐시
 │   ├── mapping_tables/           #   FCDF131.xlsx 등
 │   ├── csv_export/               #   CSV 내보내기
 │   ├── transfer/                 #   SFTP 전송 스테이징
