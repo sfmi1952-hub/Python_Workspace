@@ -1,5 +1,5 @@
 """
-M5: AI 추출 엔진 (Core) — 추출 오케스트레이터
+M5: AI 추출 엔진 (Core) -추출 오케스트레이터
 PoC_Step3 DiagnosisMapper.process() 리팩토링 + Multi-Provider 지원
 """
 import os
@@ -54,7 +54,7 @@ class ExtractionEngine:
         result = self.parse_json_response(raw_text, logger)
         if result:
             return result
-        logger("  > [JSON] 1차 파싱 실패 — LLM 수정 요청 재시도...")
+        logger("  > [JSON] 1차 파싱 실패 -LLM 수정 요청 재시도...")
         fix_prompt = (
             "아래 텍스트는 유효하지 않은 JSON입니다. "
             "올바른 JSON 배열([ { ... }, ... ])만 출력하세요. 다른 설명 없이 JSON만:\n\n"
@@ -140,6 +140,51 @@ class ExtractionEngine:
             except Exception as fe:
                 logger(f"  > Fallback 실패: {fe}")
 
+    # ── PDF 유틸리티 ────────────────────────────────────────────────────
+
+    @staticmethod
+    def _get_pdf_page_count(pdf_path: str, logger=print) -> int:
+        """PDF 페이지 수를 빠르게 확인합니다."""
+        try:
+            import pypdf
+            reader = pypdf.PdfReader(pdf_path)
+            return len(reader.pages)
+        except Exception:
+            pass
+        try:
+            import pdfplumber
+            with pdfplumber.open(pdf_path) as pdf:
+                return len(pdf.pages)
+        except Exception as e:
+            logger(f"  > PDF 페이지 수 확인 실패: {e}")
+            return 0
+
+    @staticmethod
+    def _extract_pdf_text(pdf_path: str, logger=print) -> str:
+        """PDF에서 텍스트를 추출합니다 (M3 Preprocessor 활용)."""
+        try:
+            from modules.m3_preprocessor.preprocessor import Preprocessor
+            preprocessor = Preprocessor()
+            text = preprocessor.extract_text(pdf_path, logger=logger)
+            if text:
+                return text
+        except Exception as e:
+            logger(f"  > M3 텍스트 추출 실패: {e}")
+
+        # 폴백: pypdf 직접 추출
+        try:
+            import pypdf
+            reader = pypdf.PdfReader(pdf_path)
+            texts = []
+            for page in reader.pages:
+                t = page.extract_text()
+                if t:
+                    texts.append(t)
+            return "\n".join(texts)
+        except Exception as e:
+            logger(f"  > pypdf 텍스트 추출 실패: {e}")
+            return ""
+
     # ── 메인 추출 파이프라인 ──────────────────────────────────────────────
 
     def process(
@@ -184,8 +229,17 @@ class ExtractionEngine:
             # 파일 업로드 (Provider 방식에 따라)
             uploaded_files = []
             vector_store_ids = []
+            policy_text_context = ""  # 대용량 PDF 텍스트 폴백
 
-            if self.provider.supports_file_upload():
+            # PDF 페이지 수 확인
+            pdf_page_count = self._get_pdf_page_count(target_pdf, logger)
+            use_text_fallback = pdf_page_count > 1000
+
+            if use_text_fallback:
+                logger(f"  > PDF {pdf_page_count}페이지 -Gemini 1000페이지 제한 초과, 텍스트 추출 모드 사용")
+                policy_text_context = self._extract_pdf_text(target_pdf, logger)
+                logger(f"  > 추출된 텍스트: {len(policy_text_context):,}자")
+            elif self.provider.supports_file_upload():
                 pdf_ref = self.provider.upload_file(target_pdf, mime_type="application/pdf", logger=logger)
                 uploaded_files.append(pdf_ref)
             elif self.provider.supports_vector_store():
@@ -278,13 +332,23 @@ class ExtractionEngine:
                 else:
                     if cached_path.exists():
                         logic_content = cached_path.read_text(encoding="utf-8")
-                        logger(f"Phase 1 Skip: 캐시 로드 — Logic_{safe_name}.txt")
+                        logger(f"Phase 1 Skip: 캐시 로드 -Logic_{safe_name}.txt")
                     else:
                         logic_content = "추출된 로직 없음. 표준 보험/의료 지식 활용."
 
                 # ── Phase 2: 속성 추론 ────────────────────────────────────
                 logger(f"Phase 2 (Inference): {attr_name} 추론 중...")
                 prompt = build_phase2_prompt(config, logic_content, all_items_str, relevant_context)
+
+                # 대용량 PDF 텍스트 폴백: 프롬프트에 약관 텍스트 직접 포함
+                if policy_text_context:
+                    # 속성별 관련 텍스트만 선별 (최대 200K자)
+                    MAX_CONTEXT = 200_000
+                    prompt = (
+                        prompt
+                        + "\n\n--- 약관 원문 (텍스트 추출) ---\n"
+                        + policy_text_context[:MAX_CONTEXT]
+                    )
 
                 batch_results = []
                 try:
@@ -294,7 +358,7 @@ class ExtractionEngine:
 
                     resp = self.provider.generate(
                         prompt,
-                        files=uploaded_files if self.provider.supports_file_upload() else None,
+                        files=uploaded_files if (uploaded_files and not policy_text_context) else None,
                         **kwargs,
                     )
 
