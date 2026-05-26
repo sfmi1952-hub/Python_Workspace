@@ -83,8 +83,9 @@ class DocxConverter(BaseConverter):
     # ── 단락 변환 ────────────────────────────────────────────
 
     def _paragraph_to_markdown(self, para: Paragraph) -> Optional[str]:
-        """단락을 마크다운 텍스트로 변환."""
-        text = para.text.strip()
+        """단락을 마크다운 텍스트로 변환. 취소선 run 제외."""
+        # 취소선이 아닌 run만 텍스트 수집
+        text = self._get_non_strike_text(para).strip()
         if not text:
             return ""
 
@@ -100,15 +101,25 @@ class DocxConverter(BaseConverter):
         elif "heading 4" in style_name:
             return f"#### {text}"
 
-        # Bold 체크 (전체 run이 bold인 경우)
-        all_bold = all(
-            run.bold for run in para.runs if run.text.strip()
-        ) if para.runs else False
+        # Bold 체크 (전체 run이 bold인 경우, 취소선 제외)
+        visible_runs = [r for r in para.runs if r.text.strip() and not r.font.strike]
+        all_bold = all(r.bold for r in visible_runs) if visible_runs else False
 
         if all_bold and len(text) < 200:
             return f"**{text}**"
 
         return text
+
+    @staticmethod
+    def _get_non_strike_text(para: Paragraph) -> str:
+        """단락에서 취소선이 아닌 run의 텍스트만 결합."""
+        parts = []
+        for run in para.runs:
+            if run.font.strike:
+                continue
+            if run.text:
+                parts.append(run.text)
+        return "".join(parts)
 
     # ── 표 변환 ──────────────────────────────────────────────
 
@@ -265,11 +276,15 @@ class DocxConverter(BaseConverter):
         return cleaned
 
     def _get_tc_text(self, tc) -> str:
-        """<w:tc> 요소에서 텍스트를 추출."""
+        """<w:tc> 요소에서 텍스트를 추출. 취소선(<w:strike/>) run 제외."""
         texts = []
         for p in tc.findall(qn("w:p")):
             p_texts = []
             for r in p.findall(qn("w:r")):
+                # 취소선 확인: <w:rPr>/<w:strike/>
+                rpr = r.find(qn("w:rPr"))
+                if rpr is not None and rpr.find(qn("w:strike")) is not None:
+                    continue
                 for t in r.findall(qn("w:t")):
                     if t.text:
                         p_texts.append(t.text)

@@ -6,12 +6,10 @@ Phase 1 (convert):
   - 결과: data/output/method1_baseline/converted.md, method2_adobe/converted.md
 
 Phase 2 (extract):
-  - 기존 converted.md를 읽어서 LLM 배치 추출
-  - 정답지와 비교 → 리포트 생성
+  - 레이아웃 Excel에서 담보 로드 → markdown 매칭 → LLM 배치 추출
 """
 
 import logging
-import os
 import time
 from pathlib import Path
 from typing import Callable, Dict, List
@@ -21,9 +19,7 @@ from .openai_core import OpenAICore
 from .converters.base_converter import BaseConverter, ConversionResult
 from .converters.docx_converter import DocxConverter
 from .converters.adobe_converter import AdobeConverter
-from .extraction.llm_extractor import LLMExtractor
-from .evaluator.accuracy import AccuracyEvaluator, AccuracyMetrics
-from .evaluator.report_generator import ReportGenerator
+from .extraction.llm_extractor import LLMExtractor, ExtractionRow
 
 logger = logging.getLogger(__name__)
 
@@ -32,7 +28,7 @@ class ComparisonPipeline:
     """2단계 파이프라인 오케스트레이터.
 
     Phase 1: convert  → Word/PDF → markdown 변환만 수행
-    Phase 2: extract  → markdown + 정답지 → LLM 추출 + 평가
+    Phase 2: extract  → layout + markdown → LLM 추출
     """
 
     def __init__(self, settings: Settings):
@@ -44,8 +40,6 @@ class ComparisonPipeline:
             model=settings.openai_model,
         )
         self.extractor = LLMExtractor(self.openai)
-        self.evaluator = AccuracyEvaluator()
-        self.reporter = ReportGenerator()
 
     # ══════════════════════════════════════════════════════════
     # Phase 1: Document → Markdown 변환
@@ -66,7 +60,7 @@ class ComparisonPipeline:
         result = {}
 
         if method in ("both", "method1"):
-            log("\n===== [Phase 1] Method 1: Word(docx) → python-docx → Markdown =====")
+            log("\n===== [Phase 1] Method 1: Word(docx) -> python-docx -> Markdown =====")
             output_dir = self.settings.output_dir / "method1_baseline"
             md_path, timing = self._convert_single(
                 DocxConverter(), docx_path, output_dir, log
@@ -74,7 +68,7 @@ class ComparisonPipeline:
             result["method1"] = {"md_path": str(md_path) if md_path else None, "timing": timing}
 
         if method in ("both", "method2"):
-            log("\n===== [Phase 1] Method 2: PDF → Adobe Extract API → Markdown =====")
+            log("\n===== [Phase 1] Method 2: PDF -> Adobe Extract API -> Markdown =====")
             output_dir = self.settings.output_dir / "method2_adobe"
             md_path_check = output_dir / "converted.md"
 
@@ -138,33 +132,36 @@ class ComparisonPipeline:
         return md_path, timing
 
     # ══════════════════════════════════════════════════════════
-    # Phase 2: LLM 추출 + 평가
+    # Phase 2: Layout → 매칭 → LLM 추출
     # ══════════════════════════════════════════════════════════
 
     def run_extract(
         self,
-        ground_truth_path: str,
+        layout_path: str,
         method: str = "both",
         log: Callable = print,
     ) -> dict:
-        """Phase 2: 기존 converted.md 기반 LLM 추출 + 정답 비교.
+        """Phase 2: 레이아웃 기반 LLM 추출.
 
         Returns:
-            {"method1": {"excel_path": ..., "metrics": ..., "timing": ...}, ...}
+            {"method1": {"excel_path": ..., "timing": ...}, ...}
         """
         result = {}
 
-        # 정답지에서 담보 목록 로드
-        log("[Load] Loading coverage list from ground truth...")
-        coverages = LLMExtractor.load_coverage_list(ground_truth_path)
-        log(f"[Load] {len(coverages)} unique coverages loaded")
+        # 레이아웃에서 담보 목록 로드
+        log("[Load] Loading coverage list from layout...")
+        layout_info = LLMExtractor.load_coverage_from_layout(layout_path)
+        raw_coverages = layout_info["coverages"]
+        type_label = layout_info["type_label"]
+        log(f"[Load] {len(raw_coverages)} coverages loaded from layout")
+        log(f"[Load] Type: {type_label}")
 
         if method in ("both", "method1"):
             log("\n===== [Phase 2] Method 1: LLM Extraction (Baseline) =====")
             output_dir = self.settings.output_dir / "method1_baseline"
             md_path = output_dir / "converted.md"
             r = self._extract_single(
-                md_path, coverages, output_dir, ground_truth_path, "Method 1", log
+                md_path, raw_coverages, output_dir, type_label, "Method 1", log
             )
             result["method1"] = r
 
@@ -173,123 +170,100 @@ class ComparisonPipeline:
             output_dir = self.settings.output_dir / "method2_adobe"
             md_path = output_dir / "converted.md"
             r = self._extract_single(
-                md_path, coverages, output_dir, ground_truth_path, "Method 2", log
+                md_path, raw_coverages, output_dir, type_label, "Method 2", log
             )
             result["method2"] = r
-
-        # 비교 리포트
-        if method == "both" and "method1" in result and "method2" in result:
-            log("\n===== Generating Comparison Report =====")
-            report_path = self.reporter.generate(
-                method1_metrics=result["method1"]["metrics"],
-                method2_metrics=result["method2"]["metrics"],
-                method1_timing=result["method1"]["timing"],
-                method2_timing=result["method2"]["timing"],
-                output_dir=str(self.settings.output_dir / "comparison"),
-            )
-            result["comparison_report"] = report_path
-
-            m1_rate = result["method1"]["metrics"].row_match_rate
-            m2_rate = result["method2"]["metrics"].row_match_rate
-            if m1_rate > m2_rate:
-                result["winner"] = "Method 1 (Baseline)"
-            elif m2_rate > m1_rate:
-                result["winner"] = "Method 2 (Adobe)"
-            else:
-                result["winner"] = "Tie"
-
-            log(f"[Report] Saved to: {report_path}")
-            log(f"[Result] Winner: {result['winner']}")
 
         return result
 
     def _extract_single(
         self,
         md_path: Path,
-        coverages: List[Dict[str, str]],
+        raw_coverages: List[Dict[str, str]],
         output_dir: Path,
-        ground_truth_path: str,
+        type_label: str,
         method_label: str,
         log: Callable,
     ) -> dict:
-        """단일 메서드의 LLM 추출 + 평가."""
+        """단일 메서드의 LLM 추출."""
         timing = {}
 
         if not md_path.exists() or md_path.stat().st_size == 0:
             log(f"[ERROR] {method_label}: converted.md not found at {md_path}")
             log("[HINT] Run --phase convert first")
-            return {
-                "excel_path": None,
-                "metrics": AccuracyMetrics(),
-                "timing": {},
-            }
+            return {"excel_path": None, "timing": {}}
 
         markdown_text = md_path.read_text(encoding="utf-8")
-        log(f"[{method_label}] Loaded markdown: {len(markdown_text):,} chars")
+        log(f"[{method_label}] Loaded markdown: {len(markdown_text):,} chars from {md_path}")
+
+        # 종별 마크다운 필터링
+        log(f"[{method_label}] Filtering markdown for type: {type_label}")
+        filtered_md = LLMExtractor.filter_markdown_by_type(
+            markdown_text, type_label, log=log
+        )
+
+        # 레이아웃 담보를 filtered markdown과 매칭
+        log(f"[{method_label}] Matching {len(raw_coverages)} coverages against filtered markdown...")
+        coverages, unmatched = LLMExtractor.match_coverages_against_markdown(
+            raw_coverages, filtered_md, log=log
+        )
+
+        # unmatched coverages를 별도 텍스트 파일로 저장
+        if unmatched:
+            unmatched_path = output_dir / "unmatched_coverages.txt"
+            with open(unmatched_path, "w", encoding="utf-8") as f:
+                f.write(f"Unmatched Coverages: {len(unmatched)}/{len(raw_coverages)}\n")
+                f.write(f"{'=' * 60}\n\n")
+                for i, u in enumerate(unmatched, 1):
+                    f.write(f"{i:3d}. [{u['담보PMID']}] {u['담보명']}\n")
+            log(f"[{method_label}] Saved {len(unmatched)} unmatched coverages to {unmatched_path}")
+
+        if not coverages:
+            log(f"[{method_label}] WARN: No coverages matched in markdown")
+            # 매칭 안 된 담보도 input 필드만 유지하여 출력
+            if unmatched:
+                rows = [
+                    ExtractionRow(
+                        상품코드=u["상품코드"], 담보PMID=u["담보PMID"], 담보명=u["담보명"]
+                    )
+                    for u in unmatched
+                ]
+                excel_path = str(output_dir / "extraction_result.xlsx")
+                LLMExtractor.export_to_excel(rows, excel_path)
+                log(f"[{method_label}] Saved {len(rows)} unmatched rows (input fields only) to {excel_path}")
+                return {"excel_path": excel_path, "timing": timing}
+            return {"excel_path": None, "timing": timing}
 
         # LLM 배치 추출
-        log(f"[{method_label}] Filling parameters for {len(coverages)} coverages via GPT...")
+        log(f"")
+        log(f"[{method_label}] Starting LLM extraction: {len(coverages)} coverages via {self.openai.primary_model}")
+        log(f"[{method_label}] Batch size: {self.extractor.batch_size}")
         t0 = time.time()
         rows = self.extractor.extract_with_batches(
             coverages=coverages,
-            document_markdown=markdown_text,
+            document_markdown=filtered_md,
             log=log,
         )
         timing["llm_extraction"] = time.time() - t0
+
+        # 매칭 안 된 담보는 input 필드만 유지하여 추가
+        if unmatched:
+            log(f"[{method_label}] Adding {len(unmatched)} unmatched coverages (input fields only)")
+            for u in unmatched:
+                rows.append(ExtractionRow(
+                    상품코드=u["상품코드"], 담보PMID=u["담보PMID"], 담보명=u["담보명"]
+                ))
+
         log(f"[{method_label}] Total {len(rows)} rows generated in {timing['llm_extraction']:.2f}s")
 
         if not rows:
             log(f"[{method_label}] WARN: No rows extracted by LLM")
-            return {
-                "excel_path": None,
-                "metrics": AccuracyMetrics(),
-                "timing": timing,
-            }
+            return {"excel_path": None, "timing": timing}
 
         # 엑셀 저장
         excel_path = str(output_dir / "extraction_result.xlsx")
         LLMExtractor.export_to_excel(rows, excel_path)
         log(f"[{method_label}] Saved {len(rows)} rows to {excel_path}")
 
-        # 정답 비교
-        log(f"[{method_label}] Comparing with ground truth...")
-        metrics = self.evaluator.compare(excel_path, ground_truth_path)
-        log(f"[{method_label}] Row match rate: {metrics.row_match_rate:.1%}")
-        log(f"[{method_label}] Coverage perfect rate: {metrics.coverage_perfect_rate:.1%}")
-
         timing["total"] = sum(timing.values())
-        return {
-            "excel_path": excel_path,
-            "metrics": metrics,
-            "timing": timing,
-        }
-
-    # ══════════════════════════════════════════════════════════
-    # Legacy: 한번에 실행 (하위 호환)
-    # ══════════════════════════════════════════════════════════
-
-    def run(
-        self,
-        docx_path: str = "",
-        pdf_path: str = "",
-        ground_truth_path: str = "",
-        method: str = "both",
-        skip_convert: bool = False,
-        log: Callable = print,
-    ) -> dict:
-        """전체 실행 (Phase 1 + Phase 2)."""
-        # Phase 1
-        if not skip_convert:
-            self.run_convert(
-                docx_path=docx_path,
-                pdf_path=pdf_path,
-                method=method,
-                log=log,
-            )
-
-        # Phase 2
-        return self.run_extract(
-            ground_truth_path=ground_truth_path,
-            method=method,
-            log=log,
-        )
+        return {"excel_path": excel_path, "timing": timing}

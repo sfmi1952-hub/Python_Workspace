@@ -45,11 +45,16 @@ class Settings:
     def cache_dir(self) -> Path:
         return self.project_root / "data" / "cache"
 
+    @property
+    def layout_dir(self) -> Path:
+        return self.input_dir / "layout"
+
     def ensure_dirs(self) -> None:
         dirs = [
             self.input_dir / "docx",
             self.input_dir / "pdf",
             self.input_dir / "ground_truth",
+            self.input_dir / "layout",
             self.output_dir / "method1_baseline",
             self.output_dir / "method2_adobe",
             self.output_dir / "comparison",
