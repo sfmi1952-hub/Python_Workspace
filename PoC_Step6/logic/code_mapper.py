@@ -286,6 +286,59 @@ class DiagnosisComparator:
     # ─────────────────────────────────────────────────────────────────────
     # LLM 호출 헬퍼 — 두 모델 모두 텍스트 입력으로 통일하여 공정 비교
     # ─────────────────────────────────────────────────────────────────────
+    # 컨텍스트 길이 cap (문자 기준). Claude 1M / Groq 128K 한계 모두 안전하게.
+    # 100K char ≈ 한글 25K~50K 토큰. 그룹당 (PDF+Excel) 총 ≤ 200K char 보장.
+    MAX_CHARS_PER_FILE = 100_000
+
+    def _smart_truncate(self, text, max_chars, logger):
+        """
+        진단코드 추출에 핵심인 '진단', '별표', 'KCD', 'C00~C97' 패턴이 있는
+        구간을 우선 보존하며 cap. 단순 head 자르기보다 정보 보존율 높음.
+        """
+        if len(text) <= max_chars:
+            return text
+        keywords = ["별표", "진단", "KCD", "C00", "I20", "암 ", "질병", "보장하지"]
+        # 키워드가 등장하는 위치 인덱스 수집
+        hits = []
+        for kw in keywords:
+            idx = 0
+            while True:
+                pos = text.find(kw, idx)
+                if pos == -1:
+                    break
+                hits.append(pos)
+                idx = pos + 1
+        if not hits:
+            logger(f"    - cap: head {max_chars} chars (no keywords)")
+            return text[:max_chars]
+        # 키워드 주변 ±2000 자 윈도우 합집합으로 발췌
+        hits = sorted(set(hits))
+        windows = []
+        for h in hits:
+            windows.append((max(0, h - 2000), min(len(text), h + 2000)))
+        # 윈도우 병합
+        merged = []
+        for s, e in windows:
+            if merged and s <= merged[-1][1]:
+                merged[-1] = (merged[-1][0], max(merged[-1][1], e))
+            else:
+                merged.append((s, e))
+        # 합집합 길이가 cap 보다 작으면 그대로, 크면 비율로 trim
+        total = sum(e - s for s, e in merged)
+        if total <= max_chars:
+            out = "".join(text[s:e] for s, e in merged)
+            logger(f"    - cap: keyword-windows kept {total} chars from {len(text)}")
+            return out
+        # cap 초과 시 윈도우 비율로 trim
+        ratio = max_chars / total
+        out_parts = []
+        for s, e in merged:
+            keep = int((e - s) * ratio)
+            out_parts.append(text[s : s + keep])
+        out = "".join(out_parts)
+        logger(f"    - cap: keyword-windows trimmed to {len(out)} chars from {len(text)}")
+        return out
+
     def _call_llm(self, prompt_text, file_paths, logger):
         """
         provider 종류에 관계없이 동일한 텍스트 입력을 전달.
@@ -297,16 +350,22 @@ class DiagnosisComparator:
             ext = os.path.splitext(p)[1].lower()
             if ext == ".pdf":
                 txt = self.extract_text_from_pdf(p, cache_dir=os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "rag_cache"), logger=logger)
-                tmp_txt = p + ".extracted.txt"
-                if not os.path.exists(tmp_txt):
-                    with open(tmp_txt, "w", encoding="utf-8") as wf:
-                        wf.write(txt)
+                if len(txt) > self.MAX_CHARS_PER_FILE:
+                    txt = self._smart_truncate(txt, self.MAX_CHARS_PER_FILE, logger)
+                tmp_txt = p + f".extracted.cap{self.MAX_CHARS_PER_FILE}.txt"
+                with open(tmp_txt, "w", encoding="utf-8") as wf:
+                    wf.write(txt)
                 text_files.append(tmp_txt)
             elif ext in [".xlsx", ".xls"]:
                 try:
                     df = pd.read_excel(p)
-                    tmp_csv = p + ".extracted.csv"
-                    df.to_csv(tmp_csv, index=False)
+                    csv_text = df.to_csv(index=False)
+                    if len(csv_text) > self.MAX_CHARS_PER_FILE:
+                        csv_text = csv_text[: self.MAX_CHARS_PER_FILE]
+                        logger(f"    - cap: Excel csv truncated to {self.MAX_CHARS_PER_FILE} chars")
+                    tmp_csv = p + f".extracted.cap{self.MAX_CHARS_PER_FILE}.csv"
+                    with open(tmp_csv, "w", encoding="utf-8") as wf:
+                        wf.write(csv_text)
                     text_files.append(tmp_csv)
                 except Exception as e:
                     logger(f"  > Excel 변환 실패 {p}: {e}")
