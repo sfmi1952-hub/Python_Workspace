@@ -42,3 +42,6 @@ Desktop.ini
 .idea/
 *.swp
 *.swo
+
+# 독립 저장소로 분리됨 (github.com/shin-nyum/insurance-terms-crawler)
+insurance-terms-crawler/
