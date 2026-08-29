@@ -32,7 +32,7 @@ class RAGIndexer:
     def index_policy(self, pdf_path: str, product_code: str, logger=print) -> str:
         """약관 PDF를 벡터 스토어에 인덱싱합니다."""
         if not self.provider:
-            logger("[M4] Provider 미설정 — 인덱싱 스킵")
+            logger("[M4] Provider 미설정 - 인덱싱 스킵")
             return ""
 
         store_name = f"policy_{product_code}"

@@ -24,6 +24,8 @@ class PolicyMeta:
     product_type: str
     version: str
     pdf_filename: str
+    excel_filename: str = ""
+    entry_type: str = "target"  # target(추출 대상) / reference(RAG 참조)
     total_pages: int = 0
     status: str = "stored"     # stored / preprocessed / extracted
     stored_at: str = ""
@@ -42,14 +44,22 @@ class PolicyStorage:
         return self.base_dir / product_type / safe_name / version
 
     def store(self, pdf_path: str, product_type: str, product_name: str,
-              version: str, product_code: str, logger=print) -> PolicyMeta:
-        """약관 PDF를 저장소에 저장합니다."""
+              version: str, product_code: str, excel_path: str = None,
+              entry_type: str = "target", logger=print) -> PolicyMeta:
+        """약관 PDF(+Excel)를 저장소에 저장합니다."""
         policy_dir = self._get_policy_dir(product_type, product_name, version)
         policy_dir.mkdir(parents=True, exist_ok=True)
 
         # PDF 복사
         dest = policy_dir / os.path.basename(pdf_path)
         shutil.copy2(pdf_path, str(dest))
+
+        # Excel 복사 (있으면)
+        excel_filename = ""
+        if excel_path:
+            excel_dest = policy_dir / os.path.basename(excel_path)
+            shutil.copy2(excel_path, str(excel_dest))
+            excel_filename = excel_dest.name
 
         # 메타데이터 생성
         meta = PolicyMeta(
@@ -58,6 +68,8 @@ class PolicyStorage:
             product_type=product_type,
             version=version,
             pdf_filename=dest.name,
+            excel_filename=excel_filename,
+            entry_type=entry_type,
             stored_at=datetime.datetime.now().isoformat(),
         )
 
@@ -74,23 +86,40 @@ class PolicyStorage:
             return str(f)
         return None
 
+    def get_excel_path(self, product_type: str, product_name: str, version: str) -> str | None:
+        policy_dir = self._get_policy_dir(product_type, product_name, version)
+        for f in policy_dir.glob("*.xlsx"):
+            return str(f)
+        return None
+
     def get_meta(self, product_type: str, product_name: str, version: str) -> PolicyMeta | None:
         policy_dir = self._get_policy_dir(product_type, product_name, version)
         meta_path = policy_dir / "meta.json"
         if meta_path.exists():
             data = json.loads(meta_path.read_text(encoding="utf-8"))
+            if "entry_type" not in data:
+                data["entry_type"] = "target"
             return PolicyMeta(**data)
         return None
 
-    def list_products(self, product_type: str = None) -> list[PolicyMeta]:
-        """저장된 약관 목록을 반환합니다."""
+    def list_products(self, product_type: str = None,
+                      entry_type: str = None) -> list[PolicyMeta]:
+        """저장된 약관 목록을 반환합니다.
+        entry_type: None(전체), 'target'(추출 대상), 'reference'(RAG 참조)
+        """
         results = []
         search_dir = self.base_dir / product_type if product_type else self.base_dir
 
         for meta_path in search_dir.rglob("meta.json"):
             try:
                 data = json.loads(meta_path.read_text(encoding="utf-8"))
-                results.append(PolicyMeta(**data))
+                # entry_type 필드가 없는 기존 데이터는 target으로 간주
+                if "entry_type" not in data:
+                    data["entry_type"] = "target"
+                meta = PolicyMeta(**data)
+                if entry_type and meta.entry_type != entry_type:
+                    continue
+                results.append(meta)
             except Exception:
                 pass
 

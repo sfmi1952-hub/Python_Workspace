@@ -16,11 +16,13 @@ except ImportError:
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = PROJECT_ROOT / "data"
 STORAGE_DIR = DATA_DIR / "policy_storage"
-CACHE_DIR = DATA_DIR / "rag_cache"
+CACHE_DIR = DATA_DIR / "preprocessor_cache"
 RESULT_DIR = DATA_DIR / "result"
 EXPORT_DIR = DATA_DIR / "csv_export"
 TRANSFER_DIR = DATA_DIR / "transfer"
 RECEIVE_DIR = DATA_DIR / "received"
+EXTRACTION_INPUT_DIR = DATA_DIR / "extraction_input"
+RAG_REFERENCES_DIR = DATA_DIR / "rag_references"
 
 
 @dataclass
@@ -71,12 +73,16 @@ class Settings:
     export_dir: Path = EXPORT_DIR
     transfer_dir: Path = TRANSFER_DIR
     receive_dir: Path = RECEIVE_DIR
+    extraction_input_dir: Path = EXTRACTION_INPUT_DIR
+    rag_references_dir: Path = RAG_REFERENCES_DIR
 
     def ensure_dirs(self):
         for d in [
             self.data_dir, self.storage_dir, self.cache_dir,
             self.result_dir, self.export_dir, self.transfer_dir,
-            self.receive_dir, self.data_dir / "mapping_tables",
+            self.receive_dir, self.extraction_input_dir,
+            self.rag_references_dir,
+            self.data_dir / "mapping_tables",
         ]:
             d.mkdir(parents=True, exist_ok=True)
 
